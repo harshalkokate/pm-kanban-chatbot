@@ -1,0 +1,55 @@
+{
+  "tables": {
+    "users": {
+      "description": "One row per user. Seeded with the hardcoded MVP user on startup.",
+      "columns": {
+        "id":            { "type": "INTEGER", "primaryKey": true, "autoIncrement": true },
+        "username":      { "type": "TEXT",    "unique": true, "notNull": true },
+        "password_hash": { "type": "TEXT",    "notNull": true }
+      }
+    },
+    "boards": {
+      "description": "One board per user for MVP.",
+      "columns": {
+        "id":      { "type": "INTEGER", "primaryKey": true, "autoIncrement": true },
+        "user_id": { "type": "INTEGER", "notNull": true, "foreignKey": "users.id", "onDelete": "CASCADE" },
+        "title":   { "type": "TEXT",    "notNull": true, "default": "My Board" }
+      }
+    },
+    "columns": {
+      "description": "Five fixed columns per board. Can be renamed. Order determined by 'position'.",
+      "columns": {
+        "id":       { "type": "INTEGER", "primaryKey": true, "autoIncrement": true },
+        "board_id": { "type": "INTEGER", "notNull": true, "foreignKey": "boards.id", "onDelete": "CASCADE" },
+        "title":    { "type": "TEXT",    "notNull": true },
+        "position": { "type": "INTEGER", "notNull": true }
+      }
+    },
+    "cards": {
+      "description": "Cards belong to a column. Order within the column determined by 'position'.",
+      "columns": {
+        "id":        { "type": "INTEGER", "primaryKey": true, "autoIncrement": true },
+        "column_id": { "type": "INTEGER", "notNull": true, "foreignKey": "columns.id", "onDelete": "CASCADE" },
+        "title":     { "type": "TEXT",    "notNull": true },
+        "details":   { "type": "TEXT",    "notNull": true, "default": "" },
+        "position":  { "type": "INTEGER", "notNull": true }
+      }
+    }
+  },
+  "seed": {
+    "description": "Initial data inserted on first startup when the database is created.",
+    "users": [
+      { "username": "user", "password_hash": "<bcrypt hash of 'password'>" }
+    ],
+    "boards": [
+      { "user_id": 1, "title": "My Board" }
+    ],
+    "columns": [
+      { "board_id": 1, "title": "Backlog",     "position": 0 },
+      { "board_id": 1, "title": "Discovery",   "position": 1 },
+      { "board_id": 1, "title": "In Progress", "position": 2 },
+      { "board_id": 1, "title": "Review",      "position": 3 },
+      { "board_id": 1, "title": "Done",        "position": 4 }
+    ]
+  }
+}
