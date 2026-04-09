@@ -84,3 +84,8 @@ Unit tests live alongside source files (`*.test.ts/tsx`). E2e tests are in `fron
 - Use latest versions of libraries and idiomatic approaches.
 - No emojis anywhere — code, comments, docs.
 - When hitting issues, identify root cause with evidence before fixing.
+
+
+## DETAILED PLAN
+
+@docs/PLAN.md
