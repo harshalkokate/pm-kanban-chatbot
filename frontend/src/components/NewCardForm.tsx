@@ -25,9 +25,9 @@ export const NewCardForm = ({ onAdd }: NewCardFormProps) => {
   };
 
   return (
-    <div className="mt-3">
+    <div className="mt-2">
       {isOpen ? (
-        <form onSubmit={handleSubmit} className="space-y-2.5">
+        <form onSubmit={handleSubmit} className="space-y-2 rounded-xl bg-white p-2 ring-1 ring-[rgba(3,33,71,0.08)]">
           <input
             value={formState.title}
             onChange={(event) =>
@@ -35,8 +35,9 @@ export const NewCardForm = ({ onAdd }: NewCardFormProps) => {
             }
             placeholder="Card title"
             aria-label="Card title"
-            className="w-full rounded-xl border border-[var(--stroke)] bg-white px-3 py-2.5 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
+            className="w-full rounded-lg border border-[var(--stroke)] bg-white px-2.5 py-2 text-sm font-medium text-[var(--navy-dark)] outline-none transition focus:border-[var(--primary-blue)]"
             required
+            autoFocus
           />
           <textarea
             value={formState.details}
@@ -45,14 +46,14 @@ export const NewCardForm = ({ onAdd }: NewCardFormProps) => {
             }
             placeholder="Details"
             aria-label="Card details"
-            rows={3}
-            className="w-full resize-none rounded-xl border border-[var(--stroke)] bg-white px-3 py-2.5 text-sm text-[var(--gray-text)] outline-none transition focus:border-[var(--primary-blue)]"
+            rows={2}
+            className="w-full resize-none rounded-lg border border-[var(--stroke)] bg-white px-2.5 py-2 text-xs text-[var(--gray-text)] outline-none transition focus:border-[var(--primary-blue)]"
           />
           <div className="flex items-center gap-2">
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-full bg-[var(--secondary-purple)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:opacity-50"
+              className="rounded-full bg-[var(--secondary-purple)] px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:opacity-50"
             >
               Add card
             </button>
@@ -62,9 +63,24 @@ export const NewCardForm = ({ onAdd }: NewCardFormProps) => {
                 setIsOpen(false);
                 setFormState(initialFormState);
               }}
-              className="rounded-full border border-[var(--stroke)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--gray-text)] transition hover:text-[var(--navy-dark)]"
+              aria-label="Cancel"
+              className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--gray-text)] transition hover:bg-[rgba(3,33,71,0.06)] hover:text-[var(--navy-dark)]"
             >
-              Cancel
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
             </button>
           </div>
         </form>
@@ -72,9 +88,25 @@ export const NewCardForm = ({ onAdd }: NewCardFormProps) => {
         <button
           type="button"
           onClick={() => setIsOpen(true)}
-          className="w-full rounded-xl border-2 border-dashed border-[rgba(3,33,71,0.12)] bg-white/60 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--gray-text)] transition hover:border-[var(--primary-blue)] hover:bg-white hover:text-[var(--primary-blue)]"
+          aria-label="Add a card"
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-[var(--gray-text)] transition hover:bg-white hover:text-[var(--primary-blue)]"
         >
-          + Add a card
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14" />
+            <path d="M5 12h14" />
+          </svg>
+          Add a card
         </button>
       )}
     </div>

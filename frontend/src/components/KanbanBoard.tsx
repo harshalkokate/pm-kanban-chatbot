@@ -166,7 +166,7 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
       <div className="pointer-events-none absolute left-0 top-0 h-[420px] w-[420px] -translate-x-1/3 -translate-y-1/3 rounded-full bg-[radial-gradient(circle,_rgba(32,157,215,0.25)_0%,_rgba(32,157,215,0.05)_55%,_transparent_70%)]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-[520px] w-[520px] translate-x-1/4 translate-y-1/4 rounded-full bg-[radial-gradient(circle,_rgba(117,57,145,0.18)_0%,_rgba(117,57,145,0.05)_55%,_transparent_75%)]" />
 
-      <main className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col gap-8 px-8 pb-28 pt-10">
+      <main className="relative mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-5 px-6 pb-24 pt-6">
         {apiError && (
           <div
             role="alert"
@@ -178,37 +178,63 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
         )}
 
         {/* Header */}
-        <header className="flex flex-wrap items-center justify-between gap-6 rounded-[28px] border border-[var(--stroke)] bg-white/85 px-10 py-8 shadow-[var(--shadow)] backdrop-blur">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[var(--gray-text)]">
-              Single Board Kanban
-            </p>
-            <h1 className="mt-4 font-display text-4xl font-semibold text-[var(--navy-dark)]">
-              Kanban Studio
-            </h1>
-            <p className="mt-3 max-w-lg text-sm leading-7 text-[var(--gray-text)]">
-              Keep momentum visible. Rename columns, drag cards between stages,
-              and capture quick notes without getting buried in settings.
-            </p>
-            <div className="mt-5 flex flex-wrap items-center gap-3">
-              {board.columns.map((column) => (
-                <div
-                  key={column.id}
-                  className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--navy-dark)]"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-yellow)]" />
-                  {column.title}
-                </div>
-              ))}
+        <header className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--stroke)] bg-white/85 px-6 py-4 shadow-[var(--shadow)] backdrop-blur">
+          <div className="flex items-center gap-4">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[var(--navy-dark)] text-white shadow-[0_6px_16px_rgba(3,33,71,0.25)]">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="7" height="18" rx="1.5" />
+                <rect x="14" y="3" width="7" height="11" rx="1.5" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-[var(--gray-text)]">
+                Single Board Kanban
+              </p>
+              <h1 className="mt-0.5 font-display text-2xl font-semibold leading-tight text-[var(--navy-dark)]">
+                Kanban Studio
+              </h1>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onLogout}
-            className="rounded-full border border-[var(--stroke)] px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)] transition hover:border-[var(--navy-dark)] hover:text-[var(--navy-dark)]"
-          >
-            Sign out
-          </button>
+          <div className="flex items-center gap-3">
+            <span className="hidden text-xs text-[var(--gray-text)] md:inline">
+              {board.columns.reduce((acc, c) => acc + c.cardIds.length, 0)} cards
+              across {board.columns.length} columns
+            </span>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--gray-text)] transition hover:border-[var(--navy-dark)] hover:text-[var(--navy-dark)]"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" x2="9" y1="12" y2="12" />
+              </svg>
+              Sign out
+            </button>
+          </div>
         </header>
 
         {/* Board */}
@@ -218,7 +244,7 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <section className="grid grid-cols-5 gap-4">
+          <section className="grid flex-1 grid-cols-5 gap-3">
             {board.columns.map((column) => (
               <KanbanColumn
                 key={column.id}
@@ -233,7 +259,7 @@ export const KanbanBoard = ({ onLogout }: KanbanBoardProps) => {
           </section>
           <DragOverlay>
             {activeCard ? (
-              <div className="w-[240px]">
+              <div className="w-[260px]">
                 <KanbanCardPreview card={activeCard} />
               </div>
             ) : null}

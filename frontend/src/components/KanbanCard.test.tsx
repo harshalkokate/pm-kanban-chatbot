@@ -17,7 +17,7 @@ describe("KanbanCard", () => {
     expect(screen.getByText("Some details here.")).toBeInTheDocument();
   });
 
-  it("calls onDelete with the card id when Remove is clicked", async () => {
+  it("calls onDelete with the card id when the delete icon is clicked", async () => {
     const onDelete = vi.fn();
     render(<KanbanCard card={card} onDelete={onDelete} />);
     await userEvent.click(screen.getByRole("button", { name: /delete test task/i }));

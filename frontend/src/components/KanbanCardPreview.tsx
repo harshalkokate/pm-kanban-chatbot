@@ -5,7 +5,7 @@ type KanbanCardPreviewProps = {
 };
 
 export const KanbanCardPreview = ({ card }: KanbanCardPreviewProps) => (
-  <article className="rounded-xl border border-[rgba(3,33,71,0.09)] bg-white px-4 py-3.5 shadow-[0_12px_28px_rgba(3,33,71,0.18)]">
+  <article className="rounded-xl border border-[rgba(3,33,71,0.12)] bg-white px-4 py-3 shadow-[0_16px_32px_rgba(3,33,71,0.20)]">
     <div className="min-w-0">
       <h4 className="break-words font-display text-sm font-semibold leading-snug text-[var(--navy-dark)]">
         {card.title}
