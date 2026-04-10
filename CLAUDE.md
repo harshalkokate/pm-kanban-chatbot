@@ -8,7 +8,9 @@ A Project Management MVP — a Kanban board web app with AI chat. See `AGENTS.md
 
 **Stack:** Next.js 16 frontend (TypeScript, Tailwind v4, dnd-kit) + Python FastAPI backend + SQLite + Docker. FastAPI serves the statically built Next.js site at `/`. AI via OpenRouter (`openai/gpt-oss-120b`). Package manager for Python: `uv`.
 
-**Auth:** Hardcoded credentials — username `user`, password `password`. One board per user.
+**Auth:** Real multi-user accounts. Register + login via `POST /api/auth/{register,login}` — bcrypt-hashed passwords, server-side sessions keyed by opaque bearer tokens in the `Authorization` header. The legacy `user`/`password` account is still seeded for smoke tests. Each user owns one or more boards.
+
+**PM features:** Multi-user accounts, multiple boards per user, drag-and-drop Kanban, card metadata (priority, due date, assignee, labels), AI chat assistant scoped per board, ownership checks on every mutation.
 
 ## Docker / Running the App
 
@@ -23,9 +25,18 @@ The container is named `pm-app`. The image tag is `pm-app`. Port 8000 is exposed
 
 FastAPI app in `backend/`. Entry point: `backend/main.py`.
 
-- Serves static files from `static/` at `/`
-- API routes at `/api/`
-- `GET /api/health` — liveness check
+- `backend/main.py` — routes and Pydantic models
+- `backend/database.py` — schema, migrations, seed
+- `backend/auth.py` — password hashing, sessions, `get_current_user` dependency
+- `backend/ai.py` — OpenRouter client + Pydantic structured-output models
+
+Key routes:
+- `POST /api/auth/{register,login,logout}`, `GET /api/auth/me`
+- `GET/POST /api/boards`, `GET/PATCH/DELETE /api/boards/{id}`
+- `PATCH /api/boards/{id}/columns/{column_id}`
+- `POST /api/boards/{id}/cards`, `PATCH/DELETE /api/boards/{id}/cards/{card_id}`
+- `POST /api/boards/{id}/cards/{card_id}/move`
+- `POST /api/boards/{id}/ai/chat`, `GET /api/ai/test`, `GET /api/health`
 
 Run locally (without Docker) from `backend/`:
 ```bash
@@ -59,14 +70,17 @@ npx vitest run src/components/KanbanBoard.test.tsx
 
 ```
 frontend/src/
-  app/          # Next.js App Router — page.tsx renders <KanbanBoard />
-  components/   # KanbanBoard, KanbanColumn, KanbanCard, KanbanCardPreview, NewCardForm
+  app/          # Next.js App Router — page.tsx hydrates auth and renders login or board
+  components/   # KanbanBoard, BoardSelector, KanbanColumn, KanbanCard, KanbanCardPreview,
+                # NewCardForm, CardDetailModal, LoginForm, AIChatSidebar
   lib/
-    kanban.ts   # Core types (Card, Column, BoardData), moveCard logic, createId
+    auth.ts     # Real auth: login/register/logout/fetchMe + token storage
+    api.ts      # Board-scoped API client; attaches Authorization: Bearer <token>
+    kanban.ts   # Types (Card, Column, BoardData, Priority) + pure moveCard logic
   test/         # vitest setup
 ```
 
-`KanbanBoard` owns all board state. Column operations (rename, add card, delete card) and drag-and-drop are handled here via dnd-kit. `moveCard` in `lib/kanban.ts` is pure logic — easy to unit test. IDs are generated with `createId(prefix)`.
+`KanbanBoard` owns the board list, active board id, and current board state. It fetches the board list via `api.listBoards()` on mount, stores the active id in localStorage, and re-fetches the board whenever the active id changes. `BoardSelector` is the left sidebar for creating/renaming/deleting/switching boards. `CardDetailModal` edits full card metadata (priority, due date, assignee, labels). `AIChatSidebar` is scoped per-board via a `boardId` prop.
 
 Unit tests live alongside source files (`*.test.ts/tsx`). E2e tests are in `frontend/tests/`.
 

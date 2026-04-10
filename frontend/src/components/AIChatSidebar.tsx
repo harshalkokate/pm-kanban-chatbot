@@ -6,10 +6,11 @@ import type { ChatMessage } from "@/lib/api";
 import type { BoardData } from "@/lib/kanban";
 
 type AIChatSidebarProps = {
+  boardId: number;
   onBoardUpdate: (board: BoardData) => void;
 };
 
-export const AIChatSidebar = ({ onBoardUpdate }: AIChatSidebarProps) => {
+export const AIChatSidebar = ({ boardId, onBoardUpdate }: AIChatSidebarProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -30,7 +31,7 @@ export const AIChatSidebar = ({ onBoardUpdate }: AIChatSidebarProps) => {
     setLoading(true);
 
     try {
-      const result = await api.aiChat(text, messages);
+      const result = await api.aiChat(boardId, text, messages);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: result.message },
@@ -38,12 +39,13 @@ export const AIChatSidebar = ({ onBoardUpdate }: AIChatSidebarProps) => {
       onBoardUpdate(result.board);
     } catch (err) {
       console.error(err);
+      const detail =
+        err instanceof Error && err.message
+          ? err.message
+          : "Something went wrong. Please try again.";
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content: "Something went wrong. Please try again.",
-        },
+        { role: "assistant", content: detail },
       ]);
     } finally {
       setLoading(false);

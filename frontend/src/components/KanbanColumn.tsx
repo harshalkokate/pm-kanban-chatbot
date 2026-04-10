@@ -11,7 +11,7 @@ type KanbanColumnProps = {
   onRename: (columnId: string, title: string) => void;
   onRenameCommit: (columnId: string, title: string) => void;
   onAddCard: (columnId: string, title: string, details: string) => Promise<void>;
-  onDeleteCard: (columnId: string, cardId: string) => void;
+  onOpenCard: (cardId: string) => void;
 };
 
 export const KanbanColumn = ({
@@ -20,7 +20,7 @@ export const KanbanColumn = ({
   onRename,
   onRenameCommit,
   onAddCard,
-  onDeleteCard,
+  onOpenCard,
 }: KanbanColumnProps) => {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
 
@@ -35,7 +35,6 @@ export const KanbanColumn = ({
       )}
       data-testid={`column-${column.id}`}
     >
-      {/* Column header */}
       <div className="mb-3 flex items-center gap-2 px-1">
         <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent-yellow)]" />
         <input
@@ -50,15 +49,10 @@ export const KanbanColumn = ({
         </span>
       </div>
 
-      {/* Cards */}
       <div className="flex flex-1 flex-col gap-2">
         <SortableContext items={column.cardIds} strategy={verticalListSortingStrategy}>
           {cards.map((card) => (
-            <KanbanCard
-              key={card.id}
-              card={card}
-              onDelete={(cardId) => onDeleteCard(column.id, cardId)}
-            />
+            <KanbanCard key={card.id} card={card} onOpen={onOpenCard} />
           ))}
         </SortableContext>
         {cards.length === 0 && (

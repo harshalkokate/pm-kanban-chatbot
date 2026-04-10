@@ -6,10 +6,35 @@ from pydantic import BaseModel, Field
 
 MODEL = "openai/gpt-oss-120b"
 
-openai_client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY", ""),
-)
+# Lazy client construction so ``OPENROUTER_API_KEY`` is read at the first call
+# (after ``load_dotenv`` runs in ``main.py``), not at module import time.
+_client: OpenAI | None = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        )
+    return _client
+
+
+class _ClientProxy:
+    """Backwards-compat shim so ``ai.openai_client.chat.completions.create`` still works.
+
+    Existing tests patch ``ai.openai_client.chat.completions.create``; proxying
+    through ``_get_client()`` keeps those patches working while ensuring the
+    real client picks up env vars set after import time.
+    """
+
+    @property
+    def chat(self):  # pragma: no cover - thin passthrough
+        return _get_client().chat
+
+
+openai_client = _ClientProxy()
 
 
 # ---------------------------------------------------------------------------
@@ -77,22 +102,60 @@ def chat(messages: list[dict]) -> str:
     return response.choices[0].message.content
 
 
+def _extract_json(raw: str) -> str:
+    """Extract the first top-level JSON object from *raw*.
+
+    Some models wrap JSON in a ```` ```json ... ``` ```` fence or leak a few
+    words of prose around it. This scrapes the first ``{ ... }`` block with
+    balanced braces so validation still succeeds.
+    """
+    start = raw.find("{")
+    if start == -1:
+        return raw
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return raw[start : i + 1]
+    return raw
+
+
 def chat_structured(messages: list[dict]) -> AIResponse:
     """Send a chat request and parse the response as a structured ``AIResponse``.
 
     Requests a JSON object from the model (``response_format={"type": "json_object"}``)
-    and validates the payload against the ``AIResponse`` Pydantic model.
-    Raises ``ValueError`` if the model returns an empty response.
+    and validates the payload against the ``AIResponse`` Pydantic model. Falls
+    back to ``_extract_json`` if the model leaks surrounding prose.
     """
     response = openai_client.chat.completions.create(
         model=MODEL,
         messages=messages,
         response_format={"type": "json_object"},
+        max_tokens=8192,
     )
     content = response.choices[0].message.content
     if not content:
         raise ValueError("No response from AI")
-    return AIResponse.model_validate_json(content)
+    try:
+        return AIResponse.model_validate_json(content)
+    except Exception:
+        return AIResponse.model_validate_json(_extract_json(content))
 
 
 # ---------------------------------------------------------------------------

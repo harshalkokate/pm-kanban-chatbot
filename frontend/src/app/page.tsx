@@ -3,26 +3,39 @@
 import { useState, useEffect } from "react";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { LoginForm } from "@/components/LoginForm";
-import { clearSession, getSession } from "@/lib/auth";
+import { fetchMe, logout as apiLogout, type User } from "@/lib/auth";
 
 export default function Home() {
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
-    setAuthenticated(getSession());
+    let cancelled = false;
+    fetchMe().then((u) => {
+      if (!cancelled) setUser(u);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  if (authenticated === null) return null;
+  if (user === undefined) return null;
 
-  if (!authenticated) {
-    return <LoginForm onLogin={() => setAuthenticated(true)} />;
+  if (!user) {
+    return (
+      <LoginForm
+        onLogin={() => {
+          fetchMe().then((u) => setUser(u));
+        }}
+      />
+    );
   }
 
   return (
     <KanbanBoard
-      onLogout={() => {
-        clearSession();
-        setAuthenticated(false);
+      username={user.username}
+      onLogout={async () => {
+        await apiLogout();
+        setUser(null);
       }}
     />
   );

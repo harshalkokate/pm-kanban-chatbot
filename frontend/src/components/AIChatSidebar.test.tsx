@@ -2,9 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AIChatSidebar } from "@/components/AIChatSidebar";
 
-// vi.hoisted runs before imports, so values are safe to use in vi.mock factories
 const { emptyBoard } = vi.hoisted(() => ({
-  emptyBoard: { columns: [], cards: {} },
+  emptyBoard: { id: 1, title: "T", columns: [], cards: {} },
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -15,15 +14,14 @@ const getInput = () => screen.getByLabelText(/chat message/i);
 const getSendBtn = () => screen.getByRole("button", { name: /send/i });
 const getToggleBtn = () => screen.getByRole("button", { name: /open ai chat/i });
 
-/** Render the sidebar and open the chat panel. */
 const renderAndOpen = async (onBoardUpdate = vi.fn()) => {
-  render(<AIChatSidebar onBoardUpdate={onBoardUpdate} />);
+  render(<AIChatSidebar boardId={1} onBoardUpdate={onBoardUpdate} />);
   await userEvent.click(getToggleBtn());
 };
 
 describe("AIChatSidebar", () => {
   it("toggle button opens the chat panel", async () => {
-    render(<AIChatSidebar onBoardUpdate={vi.fn()} />);
+    render(<AIChatSidebar boardId={1} onBoardUpdate={vi.fn()} />);
     expect(screen.queryByLabelText(/chat message/i)).not.toBeInTheDocument();
     await userEvent.click(getToggleBtn());
     expect(getInput()).toBeInTheDocument();
@@ -73,7 +71,7 @@ describe("AIChatSidebar", () => {
   });
 
   it("calls onBoardUpdate with the board from the AI response", async () => {
-    const board = { columns: [{ id: "1", title: "Updated", cardIds: [] }], cards: {} };
+    const board = { id: 2, title: "x", columns: [], cards: {} };
     const { aiChat } = await import("@/lib/api");
     vi.mocked(aiChat).mockResolvedValueOnce({ message: "Done", board });
     const onBoardUpdate = vi.fn();
@@ -100,7 +98,7 @@ describe("AIChatSidebar", () => {
     expect(mockFn.mock.calls.length).toBe(callsBefore);
   });
 
-  it("passes conversation history on follow-up messages", async () => {
+  it("passes boardId and conversation history on follow-up messages", async () => {
     const { aiChat } = await import("@/lib/api");
     const mockFn = vi.mocked(aiChat);
     await renderAndOpen();
@@ -113,17 +111,19 @@ describe("AIChatSidebar", () => {
     await userEvent.click(getSendBtn());
 
     const lastCall = mockFn.mock.calls[mockFn.mock.calls.length - 1];
-    const [, history] = lastCall;
+    expect(lastCall[0]).toBe(1); // boardId
+    expect(lastCall[1]).toBe("second");
+    const history = lastCall[2] as { role: string; content: string }[];
     expect(history).toContainEqual({ role: "user", content: "first" });
     expect(history).toContainEqual({ role: "assistant", content: "Sure, done!" });
   });
 
-  it("shows error message when API call fails", async () => {
+  it("surfaces the error message when API call fails", async () => {
     const { aiChat } = await import("@/lib/api");
     vi.mocked(aiChat).mockRejectedValueOnce(new Error("Network error"));
     await renderAndOpen();
     await userEvent.type(getInput(), "hello");
     await userEvent.click(getSendBtn());
-    expect(await screen.findByText(/something went wrong/i)).toBeInTheDocument();
+    expect(await screen.findByText(/network error/i)).toBeInTheDocument();
   });
 });

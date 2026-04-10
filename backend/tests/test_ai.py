@@ -1,3 +1,4 @@
+"""Tests for the AI integration (module-level functions and chat endpoint)."""
 import json
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,10 @@ def _mock_chat_response(content: str) -> MagicMock:
 
 def _ai_resp(message: str, **update_kwargs) -> AIResponse:
     return AIResponse(message=message, board_update=BoardUpdate(**update_kwargs))
+
+
+def _board_url(client) -> str:
+    return f"/api/boards/{client.board_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +52,12 @@ def test_chat_passes_all_messages():
 # ---------------------------------------------------------------------------
 
 def test_chat_structured_parses_response():
-    payload = json.dumps({"message": "Done", "board_update": {"add_cards": [], "move_cards": [], "delete_cards": [], "rename_columns": []}})
+    payload = json.dumps({
+        "message": "Done",
+        "board_update": {
+            "add_cards": [], "move_cards": [], "delete_cards": [], "rename_columns": []
+        },
+    })
     with patch("ai.openai_client.chat.completions.create") as mock:
         mock.return_value = _mock_chat_response(payload)
         from ai import chat_structured
@@ -62,7 +72,7 @@ def test_chat_structured_parses_add_cards():
         "board_update": {
             "add_cards": [{"column_id": 1, "title": "New Task", "details": ""}],
             "move_cards": [], "delete_cards": [], "rename_columns": [],
-        }
+        },
     })
     with patch("ai.openai_client.chat.completions.create") as mock:
         mock.return_value = _mock_chat_response(payload)
@@ -73,8 +83,14 @@ def test_chat_structured_parses_add_cards():
 
 
 def test_chat_structured_uses_json_object_format():
+    payload = json.dumps({
+        "message": "ok",
+        "board_update": {
+            "add_cards": [], "move_cards": [], "delete_cards": [], "rename_columns": []
+        },
+    })
     with patch("ai.openai_client.chat.completions.create") as mock:
-        mock.return_value = _mock_chat_response(json.dumps({"message": "ok", "board_update": {"add_cards": [], "move_cards": [], "delete_cards": [], "rename_columns": []}}))
+        mock.return_value = _mock_chat_response(payload)
         from ai import chat_structured
         chat_structured([])
         assert mock.call_args.kwargs["response_format"] == {"type": "json_object"}
@@ -101,7 +117,7 @@ def test_build_system_prompt_explains_format():
 
 
 # ---------------------------------------------------------------------------
-# API endpoint: GET /api/ai/test
+# GET /api/ai/test
 # ---------------------------------------------------------------------------
 
 def test_ai_test_endpoint(client):
@@ -111,13 +127,20 @@ def test_ai_test_endpoint(client):
     assert r.json()["result"] == "4"
 
 
+def test_ai_test_endpoint_requires_auth(anon_client):
+    r = anon_client.get("/api/ai/test")
+    assert r.status_code == 401
+
+
 # ---------------------------------------------------------------------------
-# API endpoint: POST /api/ai/chat
+# POST /api/boards/{id}/ai/chat
 # ---------------------------------------------------------------------------
 
 def test_ai_chat_no_board_changes(client):
     with patch("main.chat_structured", return_value=_ai_resp("Hello!")):
-        r = client.post("/api/ai/chat", json={"message": "hi", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "hi", "history": []}
+        )
     assert r.status_code == 200
     data = r.json()
     assert data["message"] == "Hello!"
@@ -125,51 +148,92 @@ def test_ai_chat_no_board_changes(client):
     assert len(data["board"]["columns"]) == 5
 
 
+def test_ai_chat_requires_auth(anon_client):
+    r = anon_client.post("/api/boards/1/ai/chat", json={"message": "hi"})
+    assert r.status_code == 401
+
+
+def test_ai_chat_unknown_board(client):
+    with patch("main.chat_structured", return_value=_ai_resp("hi")):
+        r = client.post("/api/boards/99999/ai/chat", json={"message": "hi"})
+    assert r.status_code == 404
+
+
+def test_ai_chat_cannot_access_other_users_board(client, second_client):
+    with patch("main.chat_structured", return_value=_ai_resp("hi")):
+        r = second_client.post(
+            f"/api/boards/{client.board_id}/ai/chat", json={"message": "hi"}
+        )
+    assert r.status_code == 404
+
+
 def test_ai_chat_adds_card(client):
-    col_id = int(client.get("/api/board").json()["columns"][0]["id"])
-    response = _ai_resp("Added a card", add_cards=[CardAdd(column_id=col_id, title="AI Task", details="From AI")])
+    col_id = int(client.get(_board_url(client)).json()["columns"][0]["id"])
+    response = _ai_resp(
+        "Added a card",
+        add_cards=[CardAdd(column_id=col_id, title="AI Task", details="From AI")],
+    )
     with patch("main.chat_structured", return_value=response):
-        r = client.post("/api/ai/chat", json={"message": "add a task", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat",
+            json={"message": "add a task", "history": []},
+        )
     assert r.status_code == 200
-    board = r.json()["board"]
-    titles = [c["title"] for c in board["cards"].values()]
+    titles = [c["title"] for c in r.json()["board"]["cards"].values()]
     assert "AI Task" in titles
 
 
 def test_ai_chat_adds_card_to_correct_column(client):
-    cols = client.get("/api/board").json()["columns"]
-    target_col_id = int(cols[2]["id"])  # In Progress
-    response = _ai_resp("Added", add_cards=[CardAdd(column_id=target_col_id, title="In-Progress Task", details="")])
+    cols = client.get(_board_url(client)).json()["columns"]
+    target_col_id = int(cols[2]["id"])
+    response = _ai_resp(
+        "Added",
+        add_cards=[CardAdd(column_id=target_col_id, title="In-Progress Task", details="")],
+    )
     with patch("main.chat_structured", return_value=response):
-        client.post("/api/ai/chat", json={"message": "add task", "history": []})
-    board = client.get("/api/board").json()
+        client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "add task", "history": []}
+        )
+    board = client.get(_board_url(client)).json()
     target_col = next(c for c in board["columns"] if c["id"] == str(target_col_id))
-    card_titles = [board["cards"][cid]["title"] for cid in target_col["cardIds"]]
-    assert "In-Progress Task" in card_titles
+    titles = [board["cards"][cid]["title"] for cid in target_col["cardIds"]]
+    assert "In-Progress Task" in titles
 
 
 def test_ai_chat_deletes_card(client):
-    # First add a card via the normal API
-    col_id = int(client.get("/api/board").json()["columns"][0]["id"])
-    card_id = int(client.post("/api/cards", json={"column_id": col_id, "title": "To Delete"}).json()["id"])
-
+    col_id = int(client.get(_board_url(client)).json()["columns"][0]["id"])
+    card_id = int(
+        client.post(
+            f"{_board_url(client)}/cards", json={"column_id": col_id, "title": "To Delete"}
+        ).json()["id"]
+    )
     response = _ai_resp("Deleted", delete_cards=[CardDelete(card_id=card_id)])
     with patch("main.chat_structured", return_value=response):
-        r = client.post("/api/ai/chat", json={"message": "delete it", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "delete it", "history": []}
+        )
     assert r.status_code == 200
-    board = r.json()["board"]
-    assert str(card_id) not in board["cards"]
+    assert str(card_id) not in r.json()["board"]["cards"]
 
 
 def test_ai_chat_moves_card(client):
-    cols = client.get("/api/board").json()["columns"]
+    cols = client.get(_board_url(client)).json()["columns"]
     src_col_id = int(cols[0]["id"])
     dst_col_id = int(cols[1]["id"])
-    card_id = int(client.post("/api/cards", json={"column_id": src_col_id, "title": "Movable"}).json()["id"])
-
-    response = _ai_resp("Moved", move_cards=[CardMove(card_id=card_id, column_id=dst_col_id, position=0)])
+    card_id = int(
+        client.post(
+            f"{_board_url(client)}/cards",
+            json={"column_id": src_col_id, "title": "Movable"},
+        ).json()["id"]
+    )
+    response = _ai_resp(
+        "Moved",
+        move_cards=[CardMove(card_id=card_id, column_id=dst_col_id, position=0)],
+    )
     with patch("main.chat_structured", return_value=response):
-        r = client.post("/api/ai/chat", json={"message": "move it", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "move it", "history": []}
+        )
     assert r.status_code == 200
     board = r.json()["board"]
     dst_col = next(c for c in board["columns"] if c["id"] == str(dst_col_id))
@@ -177,18 +241,21 @@ def test_ai_chat_moves_card(client):
 
 
 def test_ai_chat_renames_column(client):
-    col_id = int(client.get("/api/board").json()["columns"][0]["id"])
-    response = _ai_resp("Renamed", rename_columns=[ColumnRename(column_id=col_id, title="Sprint")])
+    col_id = int(client.get(_board_url(client)).json()["columns"][0]["id"])
+    response = _ai_resp(
+        "Renamed", rename_columns=[ColumnRename(column_id=col_id, title="Sprint")]
+    )
     with patch("main.chat_structured", return_value=response):
-        r = client.post("/api/ai/chat", json={"message": "rename it", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "rename it", "history": []}
+        )
     assert r.status_code == 200
-    board = r.json()["board"]
-    titles = [c["title"] for c in board["columns"]]
+    titles = [c["title"] for c in r.json()["board"]["columns"]]
     assert "Sprint" in titles
 
 
 def test_ai_chat_applies_multiple_actions(client):
-    cols = client.get("/api/board").json()["columns"]
+    cols = client.get(_board_url(client)).json()["columns"]
     col1_id = int(cols[0]["id"])
     col2_id = int(cols[1]["id"])
     response = _ai_resp(
@@ -200,7 +267,9 @@ def test_ai_chat_applies_multiple_actions(client):
         rename_columns=[ColumnRename(column_id=col1_id, title="Now")],
     )
     with patch("main.chat_structured", return_value=response):
-        r = client.post("/api/ai/chat", json={"message": "do stuff", "history": []})
+        r = client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "do stuff", "history": []}
+        )
     assert r.status_code == 200
     board = r.json()["board"]
     titles = [c["title"] for c in board["cards"].values()]
@@ -217,7 +286,10 @@ def test_ai_chat_passes_history_to_model(client):
     ]
     with patch("main.chat_structured") as mock_cs:
         mock_cs.return_value = _ai_resp("ok")
-        client.post("/api/ai/chat", json={"message": "follow up", "history": history})
+        client.post(
+            f"{_board_url(client)}/ai/chat",
+            json={"message": "follow up", "history": history},
+        )
     messages = mock_cs.call_args[0][0]
     roles = [m["role"] for m in messages]
     assert roles[0] == "system"
@@ -229,7 +301,27 @@ def test_ai_chat_passes_history_to_model(client):
 def test_ai_chat_board_in_system_prompt(client):
     with patch("main.chat_structured") as mock_cs:
         mock_cs.return_value = _ai_resp("ok")
-        client.post("/api/ai/chat", json={"message": "hi", "history": []})
+        client.post(
+            f"{_board_url(client)}/ai/chat", json={"message": "hi", "history": []}
+        )
     system_msg = mock_cs.call_args[0][0][0]
     assert system_msg["role"] == "system"
     assert "Backlog" in system_msg["content"]
+
+
+def test_ai_chat_ignores_mutations_for_other_boards_columns(client, second_client):
+    """AI output referencing another user's column IDs must be silently skipped."""
+    other_col = int(client.get(_board_url(client)).json()["columns"][0]["id"])
+    response = _ai_resp(
+        "Trying to inject",
+        add_cards=[CardAdd(column_id=other_col, title="Injected", details="")],
+    )
+    with patch("main.chat_structured", return_value=response):
+        r = second_client.post(
+            f"{_board_url(second_client)}/ai/chat",
+            json={"message": "do it", "history": []},
+        )
+    assert r.status_code == 200
+    # Neither user should see an injected card on alice's board
+    alice = client.get(_board_url(client)).json()
+    assert "Injected" not in [c["title"] for c in alice["cards"].values()]

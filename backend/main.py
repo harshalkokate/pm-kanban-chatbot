@@ -1,119 +1,196 @@
+"""FastAPI application entry point.
+
+Routes are grouped by concern:
+
+* Auth (``/api/auth/...``): register, login, logout, me.
+* Boards (``/api/boards``, ``/api/boards/{id}``): CRUD for a user's boards.
+* Board contents (``/api/boards/{id}/columns/...``, ``/api/boards/{id}/cards/...``):
+  per-board column and card operations, including AI chat.
+
+All per-board routes require the authenticated user to own the board; ownership
+is verified in :func:`_require_board_for_user`.
+"""
+import json
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-from ai import BoardUpdate, AIResponse, build_system_prompt, chat, chat_structured
-from database import get_db, init_db
-
-# Load .env from project root for local dev (no-op in Docker where env vars are injected)
+# Load .env BEFORE importing ``ai`` so the OpenAI client reads the key at
+# construction. Docker injects env vars directly, but ``uv run`` relies on this.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# MVP: single hardcoded user. Replace with session auth in future.
-MVP_USER_ID = 1
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+
+from ai import BoardUpdate, build_system_prompt, chat, chat_structured
+from auth import (
+    create_session,
+    delete_session,
+    get_current_user,
+    get_current_user_id,
+    verify_password,
+)
+from database import (
+    VALID_PRIORITIES,
+    create_board_with_defaults,
+    create_user,
+    get_db,
+    init_db,
+)
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """FastAPI lifespan handler — initialises the database before serving requests."""
     init_db()
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, title="PM App")
 
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
-class CardOut(BaseModel):
-    """API response shape for a single card. IDs are strings to match the frontend store."""
+class RegisterIn(BaseModel):
+    username: str = Field(min_length=3, max_length=32)
+    password: str = Field(min_length=6, max_length=128)
 
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class AuthOut(BaseModel):
+    token: str
+    user: "UserOut"
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+
+
+class BoardSummary(BaseModel):
+    id: int
+    title: str
+    position: int
+    card_count: int
+
+
+class BoardCreateIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
+class BoardUpdateIn(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    position: Optional[int] = None
+
+
+class CardOut(BaseModel):
     id: str
     title: str
     details: str
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    assignee: Optional[str] = None
+    labels: list[str] = Field(default_factory=list)
 
 
 class ColumnOut(BaseModel):
-    """API response shape for a single column, including an ordered list of card IDs."""
-
     id: str
     title: str
     cardIds: list[str]
 
 
 class BoardOut(BaseModel):
-    """Full board response: ordered columns and a flat card lookup map."""
-
+    id: int
+    title: str
     columns: list[ColumnOut]
     cards: dict[str, CardOut]
 
 
 class RenameColumnIn(BaseModel):
-    """Request body for ``PATCH /api/columns/{column_id}``."""
-
-    title: str
+    title: str = Field(min_length=1, max_length=120)
 
 
 class AddCardIn(BaseModel):
-    """Request body for ``POST /api/cards``."""
-
     column_id: int
-    title: str
+    title: str = Field(min_length=1, max_length=200)
     details: str = ""
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    assignee: Optional[str] = None
+    labels: list[str] = Field(default_factory=list)
+
+    @field_validator("priority")
+    @classmethod
+    def _validate_priority(cls, v):
+        if v is not None and v not in VALID_PRIORITIES:
+            raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
+        return v
 
 
 class UpdateCardIn(BaseModel):
-    """Request body for ``PATCH /api/cards/{card_id}``."""
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    details: Optional[str] = None
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    assignee: Optional[str] = None
+    labels: Optional[list[str]] = None
+    clear_priority: bool = False
+    clear_due_date: bool = False
+    clear_assignee: bool = False
 
-    title: str
-    details: str
+    @field_validator("priority")
+    @classmethod
+    def _validate_priority(cls, v):
+        if v is not None and v not in VALID_PRIORITIES:
+            raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
+        return v
 
 
 class MoveCardIn(BaseModel):
-    """Request body for ``POST /api/cards/{card_id}/move``."""
-
     column_id: int
-    position: int  # 0-indexed target position within the destination column
+    position: int
 
 
 class ChatMessage(BaseModel):
-    """A single message in the AI conversation history."""
-
-    role: str     # "user" or "assistant"
+    role: str
     content: str
 
 
 class AIChatIn(BaseModel):
-    """Request body for ``POST /api/ai/chat``."""
-
     message: str
-    history: list[ChatMessage] = []  # Prior turns for multi-turn context
+    history: list[ChatMessage] = []
+
+
+AuthOut.model_rebuild()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_board_id(conn: sqlite3.Connection) -> int:
-    """Return the board ID for the MVP user, or raise HTTP 404 if not found."""
+def _require_board_for_user(
+    conn: sqlite3.Connection, board_id: int, user_id: int
+) -> sqlite3.Row:
     row = conn.execute(
-        "SELECT id FROM boards WHERE user_id = ?", (MVP_USER_ID,)
+        "SELECT * FROM boards WHERE id = ? AND user_id = ?", (board_id, user_id)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Board not found")
-    return row["id"]
+    return row
 
 
 def _require_column(conn: sqlite3.Connection, column_id: int, board_id: int) -> sqlite3.Row:
-    """Fetch a column row, raising HTTP 404 if it does not belong to *board_id*."""
     row = conn.execute(
         "SELECT * FROM columns WHERE id = ? AND board_id = ?", (column_id, board_id)
     ).fetchone()
@@ -123,10 +200,6 @@ def _require_column(conn: sqlite3.Connection, column_id: int, board_id: int) -> 
 
 
 def _require_card(conn: sqlite3.Connection, card_id: int, board_id: int) -> sqlite3.Row:
-    """Fetch a card row, raising HTTP 404 if the card does not belong to *board_id*.
-
-    Ownership is verified via a JOIN through the card's column.
-    """
     row = conn.execute(
         """
         SELECT cards.* FROM cards
@@ -141,10 +214,6 @@ def _require_card(conn: sqlite3.Connection, card_id: int, board_id: int) -> sqli
 
 
 def _renormalize_column(conn: sqlite3.Connection, column_id: int) -> None:
-    """Reassign card positions in *column_id* as contiguous integers starting from 0.
-
-    Called after a deletion to close gaps left by the removed card.
-    """
     rows = conn.execute(
         "SELECT id FROM cards WHERE column_id = ? ORDER BY position, id", (column_id,)
     ).fetchall()
@@ -158,12 +227,6 @@ def _move_card_in_db(
     target_column_id: int,
     target_position: int,
 ) -> None:
-    """Relocate *card_id* to *target_column_id* at *target_position*.
-
-    Handles both intra-column reordering and cross-column moves by rebuilding
-    the ordered ID lists for the source and destination columns, inserting the
-    card at the requested index, and writing back the new positions in bulk.
-    """
     card = conn.execute(
         "SELECT column_id FROM cards WHERE id = ?", (card_id,)
     ).fetchone()
@@ -189,7 +252,7 @@ def _move_card_in_db(
             ).fetchall()
         ]
 
-    insert_at = min(target_position, len(target_ids))
+    insert_at = max(0, min(target_position, len(target_ids)))
     target_ids.insert(insert_at, card_id)
 
     conn.execute("UPDATE cards SET column_id = ? WHERE id = ?", (target_column_id, card_id))
@@ -199,13 +262,26 @@ def _move_card_in_db(
         conn.execute("UPDATE cards SET position = ? WHERE id = ?", (i, cid))
 
 
-def _build_board(conn: sqlite3.Connection, board_id: int) -> BoardOut:
-    """Assemble a ``BoardOut`` response from the current database state.
+def _card_to_out(row: sqlite3.Row) -> CardOut:
+    try:
+        labels = json.loads(row["labels"] or "[]")
+        if not isinstance(labels, list):
+            labels = []
+    except (json.JSONDecodeError, TypeError):
+        labels = []
+    return CardOut(
+        id=str(row["id"]),
+        title=row["title"],
+        details=row["details"],
+        priority=row["priority"],
+        due_date=row["due_date"],
+        assignee=row["assignee"],
+        labels=[str(l) for l in labels],
+    )
 
-    Fetches all columns and cards for *board_id* in a single query each,
-    then groups cards by column to produce the nested structure expected by
-    the frontend.
-    """
+
+def _build_board(conn: sqlite3.Connection, board_row: sqlite3.Row) -> BoardOut:
+    board_id = board_row["id"]
     cols = conn.execute(
         "SELECT * FROM columns WHERE board_id = ? ORDER BY position", (board_id,)
     ).fetchall()
@@ -231,15 +307,13 @@ def _build_board(conn: sqlite3.Connection, board_id: int) -> BoardOut:
         )
         for col in cols
     ]
-    cards_out = {
-        str(c["id"]): CardOut(id=str(c["id"]), title=c["title"], details=c["details"])
-        for c in all_cards
-    }
-    return BoardOut(columns=columns_out, cards=cards_out)
+    cards_out = {str(c["id"]): _card_to_out(c) for c in all_cards}
+    return BoardOut(
+        id=board_id, title=board_row["title"], columns=columns_out, cards=cards_out
+    )
 
 
 def _build_board_for_ai(conn: sqlite3.Connection, board_id: int) -> dict:
-    """Board representation with integer IDs for the AI system prompt."""
     cols = conn.execute(
         "SELECT * FROM columns WHERE board_id = ? ORDER BY position", (board_id,)
     ).fetchall()
@@ -249,7 +323,14 @@ def _build_board_for_ai(conn: sqlite3.Connection, board_id: int) -> dict:
                 "id": col["id"],
                 "title": col["title"],
                 "cards": [
-                    {"id": c["id"], "title": c["title"], "details": c["details"]}
+                    {
+                        "id": c["id"],
+                        "title": c["title"],
+                        "details": c["details"],
+                        "priority": c["priority"],
+                        "due_date": c["due_date"],
+                        "assignee": c["assignee"],
+                    }
                     for c in conn.execute(
                         "SELECT * FROM cards WHERE column_id = ? ORDER BY position",
                         (col["id"],),
@@ -264,13 +345,7 @@ def _build_board_for_ai(conn: sqlite3.Connection, board_id: int) -> dict:
 def _apply_board_update(
     conn: sqlite3.Connection, update: BoardUpdate, board_id: int
 ) -> None:
-    """Apply AI-generated board mutations to the database.
-
-    Iterates through each mutation list in *update* (add, move, delete, rename)
-    and executes the corresponding SQL. Ownership of every column and card is
-    validated against *board_id* before any write; unknown IDs are silently
-    skipped so a single bad AI instruction does not abort the whole update.
-    """
+    """Apply AI-generated mutations, validating every ID against *board_id*."""
     for action in update.add_cards:
         col = conn.execute(
             "SELECT id FROM columns WHERE id = ? AND board_id = ?",
@@ -282,7 +357,7 @@ def _apply_board_update(
             "SELECT COUNT(*) FROM cards WHERE column_id = ?", (action.column_id,)
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO cards (column_id, title, details, position) VALUES (?, ?, ?, ?)",
+            "INSERT INTO cards (column_id, title, details, position, labels) VALUES (?, ?, ?, ?, '[]')",
             (action.column_id, action.title, action.details, position),
         )
 
@@ -326,101 +401,292 @@ def _apply_board_update(
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Health
 # ---------------------------------------------------------------------------
 
-@app.get("/api/board", response_model=BoardOut)
-def get_board(conn: sqlite3.Connection = Depends(get_db)):
-    """Return the full board state: ordered columns and a flat card map."""
-    board_id = _get_board_id(conn)
-    return _build_board(conn, board_id)
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
 
 
-@app.patch("/api/columns/{column_id}")
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register", response_model=AuthOut, status_code=201)
+def register(body: RegisterIn, conn: sqlite3.Connection = Depends(get_db)):
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username = ?", (body.username,)
+    ).fetchone()
+    if existing:
+        raise HTTPException(status_code=409, detail="Username already taken")
+    try:
+        user_id = create_user(conn, body.username, body.password)
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Username already taken")
+    create_board_with_defaults(conn, user_id, "My Board")
+    token = create_session(conn, user_id)
+    return AuthOut(token=token, user=UserOut(id=user_id, username=body.username))
+
+
+@app.post("/api/auth/login", response_model=AuthOut)
+def login(body: LoginIn, conn: sqlite3.Connection = Depends(get_db)):
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ?", (body.username,)
+    ).fetchone()
+    if not row or not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_session(conn, row["id"])
+    return AuthOut(token=token, user=UserOut(id=row["id"], username=row["username"]))
+
+
+@app.post("/api/auth/logout", status_code=204)
+def logout(
+    authorization: str | None = Header(default=None),
+    conn: sqlite3.Connection = Depends(get_db),
+    _user: sqlite3.Row = Depends(get_current_user),
+):
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1]
+        delete_session(conn, token)
+
+
+@app.get("/api/auth/me", response_model=UserOut)
+def me(current_user: sqlite3.Row = Depends(get_current_user)):
+    return UserOut(id=current_user["id"], username=current_user["username"])
+
+
+# ---------------------------------------------------------------------------
+# Board CRUD
+# ---------------------------------------------------------------------------
+
+@app.get("/api/boards", response_model=list[BoardSummary])
+def list_boards(
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    rows = conn.execute(
+        """
+        SELECT b.id, b.title, b.position,
+               (SELECT COUNT(*) FROM cards c
+                JOIN columns col ON c.column_id = col.id
+                WHERE col.board_id = b.id) AS card_count
+        FROM boards b
+        WHERE b.user_id = ?
+        ORDER BY b.position, b.id
+        """,
+        (user_id,),
+    ).fetchall()
+    return [
+        BoardSummary(id=r["id"], title=r["title"], position=r["position"], card_count=r["card_count"])
+        for r in rows
+    ]
+
+
+@app.post("/api/boards", response_model=BoardSummary, status_code=201)
+def create_board(
+    body: BoardCreateIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    board_id = create_board_with_defaults(conn, user_id, body.title)
+    row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+    return BoardSummary(id=row["id"], title=row["title"], position=row["position"], card_count=0)
+
+
+@app.get("/api/boards/{board_id}", response_model=BoardOut)
+def get_board(
+    board_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    board = _require_board_for_user(conn, board_id, user_id)
+    return _build_board(conn, board)
+
+
+@app.patch("/api/boards/{board_id}", response_model=BoardSummary)
+def update_board(
+    board_id: int,
+    body: BoardUpdateIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    _require_board_for_user(conn, board_id, user_id)
+    if body.title is not None:
+        conn.execute("UPDATE boards SET title = ? WHERE id = ?", (body.title, board_id))
+    if body.position is not None:
+        conn.execute("UPDATE boards SET position = ? WHERE id = ?", (body.position, board_id))
+    row = conn.execute(
+        """
+        SELECT b.id, b.title, b.position,
+               (SELECT COUNT(*) FROM cards c
+                JOIN columns col ON c.column_id = col.id
+                WHERE col.board_id = b.id) AS card_count
+        FROM boards b WHERE b.id = ?
+        """,
+        (board_id,),
+    ).fetchone()
+    return BoardSummary(id=row["id"], title=row["title"], position=row["position"], card_count=row["card_count"])
+
+
+@app.delete("/api/boards/{board_id}", status_code=204)
+def delete_board(
+    board_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    _require_board_for_user(conn, board_id, user_id)
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM boards WHERE user_id = ?", (user_id,)
+    ).fetchone()[0]
+    if remaining <= 1:
+        raise HTTPException(
+            status_code=400, detail="Cannot delete your last board"
+        )
+    conn.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+
+
+# ---------------------------------------------------------------------------
+# Column routes
+# ---------------------------------------------------------------------------
+
+@app.patch("/api/boards/{board_id}/columns/{column_id}")
 def rename_column(
+    board_id: int,
     column_id: int,
     body: RenameColumnIn,
     conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    """Update the title of a column."""
-    board_id = _get_board_id(conn)
+    _require_board_for_user(conn, board_id, user_id)
     _require_column(conn, column_id, board_id)
     conn.execute("UPDATE columns SET title = ? WHERE id = ?", (body.title, column_id))
     return {"ok": True}
 
 
-@app.post("/api/cards", response_model=CardOut, status_code=201)
-def add_card(body: AddCardIn, conn: sqlite3.Connection = Depends(get_db)):
-    """Create a new card at the end of the specified column."""
-    board_id = _get_board_id(conn)
+# ---------------------------------------------------------------------------
+# Card routes
+# ---------------------------------------------------------------------------
+
+@app.post("/api/boards/{board_id}/cards", response_model=CardOut, status_code=201)
+def add_card(
+    board_id: int,
+    body: AddCardIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    _require_board_for_user(conn, board_id, user_id)
     _require_column(conn, body.column_id, board_id)
     position = conn.execute(
         "SELECT COUNT(*) FROM cards WHERE column_id = ?", (body.column_id,)
     ).fetchone()[0]
     cursor = conn.execute(
-        "INSERT INTO cards (column_id, title, details, position) VALUES (?, ?, ?, ?)",
-        (body.column_id, body.title, body.details, position),
+        """
+        INSERT INTO cards (column_id, title, details, position, priority, due_date, assignee, labels, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+        """,
+        (
+            body.column_id,
+            body.title,
+            body.details,
+            position,
+            body.priority,
+            body.due_date,
+            body.assignee,
+            json.dumps(body.labels),
+        ),
     )
-    card_id = cursor.lastrowid
-    return CardOut(id=str(card_id), title=body.title, details=body.details)
+    row = conn.execute("SELECT * FROM cards WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return _card_to_out(row)
 
 
-@app.patch("/api/cards/{card_id}", response_model=CardOut)
+@app.patch("/api/boards/{board_id}/cards/{card_id}", response_model=CardOut)
 def update_card(
+    board_id: int,
     card_id: int,
     body: UpdateCardIn,
     conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    """Update the title and details of an existing card."""
-    board_id = _get_board_id(conn)
+    _require_board_for_user(conn, board_id, user_id)
     _require_card(conn, card_id, board_id)
-    conn.execute(
-        "UPDATE cards SET title = ?, details = ? WHERE id = ?",
-        (body.title, body.details, card_id),
-    )
-    return CardOut(id=str(card_id), title=body.title, details=body.details)
+
+    updates: list[tuple[str, object]] = []
+    if body.title is not None:
+        updates.append(("title", body.title))
+    if body.details is not None:
+        updates.append(("details", body.details))
+    if body.clear_priority:
+        updates.append(("priority", None))
+    elif body.priority is not None:
+        updates.append(("priority", body.priority))
+    if body.clear_due_date:
+        updates.append(("due_date", None))
+    elif body.due_date is not None:
+        updates.append(("due_date", body.due_date))
+    if body.clear_assignee:
+        updates.append(("assignee", None))
+    elif body.assignee is not None:
+        updates.append(("assignee", body.assignee))
+    if body.labels is not None:
+        updates.append(("labels", json.dumps(body.labels)))
+
+    if updates:
+        set_sql = ", ".join(f"{col} = ?" for col, _ in updates)
+        params = [val for _, val in updates] + [card_id]
+        conn.execute(f"UPDATE cards SET {set_sql} WHERE id = ?", params)
+
+    row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+    return _card_to_out(row)
 
 
-@app.delete("/api/cards/{card_id}", status_code=204)
-def delete_card(card_id: int, conn: sqlite3.Connection = Depends(get_db)):
-    """Delete a card and renormalize positions in its former column."""
-    board_id = _get_board_id(conn)
+@app.delete("/api/boards/{board_id}/cards/{card_id}", status_code=204)
+def delete_card(
+    board_id: int,
+    card_id: int,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    _require_board_for_user(conn, board_id, user_id)
     card = _require_card(conn, card_id, board_id)
     column_id = card["column_id"]
     conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
     _renormalize_column(conn, column_id)
 
 
-@app.post("/api/cards/{card_id}/move")
+@app.post("/api/boards/{board_id}/cards/{card_id}/move")
 def move_card(
+    board_id: int,
     card_id: int,
     body: MoveCardIn,
     conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
-    """Move a card to a target column at a target position."""
-    board_id = _get_board_id(conn)
+    _require_board_for_user(conn, board_id, user_id)
     _require_card(conn, card_id, board_id)
     _require_column(conn, body.column_id, board_id)
     _move_card_in_db(conn, card_id, body.column_id, body.position)
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# AI routes
+# ---------------------------------------------------------------------------
+
 @app.get("/api/ai/test")
-def ai_test():
-    """Connectivity check — sends '2+2' to the model and returns the answer."""
+def ai_test(_user: sqlite3.Row = Depends(get_current_user)):
     result = chat([{"role": "user", "content": "What is 2+2? Reply with just the number."}])
     return {"result": result}
 
 
-@app.post("/api/ai/chat")
-def ai_chat(body: AIChatIn, conn: sqlite3.Connection = Depends(get_db)):
-    """Process a user message through the AI and apply any resulting board mutations.
-
-    Builds a prompt with the current board state, sends the conversation history
-    plus the new message to the model, applies the structured ``board_update``
-    response to the database, and returns the AI's reply alongside the updated board.
-    """
-    board_id = _get_board_id(conn)
+@app.post("/api/boards/{board_id}/ai/chat")
+def ai_chat(
+    board_id: int,
+    body: AIChatIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    board = _require_board_for_user(conn, board_id, user_id)
     board_for_ai = _build_board_for_ai(conn, board_id)
 
     messages = [
@@ -429,12 +695,22 @@ def ai_chat(body: AIChatIn, conn: sqlite3.Connection = Depends(get_db)):
         {"role": "user", "content": body.message},
     ]
 
-    ai_response = chat_structured(messages)
+    try:
+        ai_response = chat_structured(messages)
+    except Exception as exc:
+        # Surface OpenRouter/OpenAI errors (auth, rate limit, bad JSON) to the
+        # client instead of a generic 500 so the chat widget can show them.
+        raise HTTPException(status_code=502, detail=f"AI request failed: {exc}")
+
     _apply_board_update(conn, ai_response.board_update, board_id)
-    updated_board = _build_board(conn, board_id)
+    updated_board = _build_board(conn, board)
 
     return {"message": ai_response.message, "board": updated_board}
 
 
-# Mount static files last so API routes take priority
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+# ---------------------------------------------------------------------------
+# Static files (must be mounted last so API routes take priority)
+# ---------------------------------------------------------------------------
+
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
