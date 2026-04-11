@@ -168,15 +168,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "created_at" not in board_cols:
         add("boards", "created_at INTEGER NOT NULL DEFAULT 0")
     card_cols = columns_of("cards")
-    for ddl in (
+    for name, ddl in (
         ("priority", "priority TEXT"),
         ("due_date", "due_date TEXT"),
         ("assignee", "assignee TEXT"),
         ("labels", "labels TEXT NOT NULL DEFAULT '[]'"),
         ("created_at", "created_at INTEGER NOT NULL DEFAULT 0"),
     ):
-        if ddl[0] not in card_cols:
-            add("cards", ddl[1])
+        if name not in card_cols:
+            add("cards", ddl)
 
 
 def init_db() -> None:

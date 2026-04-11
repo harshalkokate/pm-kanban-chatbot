@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import clsx from "clsx";
 import type { Card, Priority } from "@/lib/kanban";
 import type { CardPatch } from "@/lib/api";
 
@@ -236,9 +235,7 @@ export const CardDetailModal = ({
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className={clsx(
-                  "rounded-full bg-[var(--secondary-purple)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:opacity-60"
-                )}
+                className="rounded-full bg-[var(--secondary-purple)] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:brightness-110 disabled:opacity-60"
               >
                 {saving ? "Saving…" : "Save"}
               </button>

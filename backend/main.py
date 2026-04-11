@@ -315,31 +315,61 @@ def _build_board(conn: sqlite3.Connection, board_row: sqlite3.Row) -> BoardOut:
 
 def _build_board_for_ai(conn: sqlite3.Connection, board_id: int) -> dict:
     cols = conn.execute(
-        "SELECT * FROM columns WHERE board_id = ? ORDER BY position", (board_id,)
+        "SELECT id, title FROM columns WHERE board_id = ? ORDER BY position",
+        (board_id,),
     ).fetchall()
+    all_cards = conn.execute(
+        """
+        SELECT cards.id, cards.column_id, cards.title, cards.details,
+               cards.priority, cards.due_date, cards.assignee
+        FROM cards
+        JOIN columns ON cards.column_id = columns.id
+        WHERE columns.board_id = ?
+        ORDER BY cards.column_id, cards.position
+        """,
+        (board_id,),
+    ).fetchall()
+
+    cards_by_column: dict[int, list[dict]] = {col["id"]: [] for col in cols}
+    for c in all_cards:
+        cards_by_column[c["column_id"]].append(
+            {
+                "id": c["id"],
+                "title": c["title"],
+                "details": c["details"],
+                "priority": c["priority"],
+                "due_date": c["due_date"],
+                "assignee": c["assignee"],
+            }
+        )
     return {
         "columns": [
-            {
-                "id": col["id"],
-                "title": col["title"],
-                "cards": [
-                    {
-                        "id": c["id"],
-                        "title": c["title"],
-                        "details": c["details"],
-                        "priority": c["priority"],
-                        "due_date": c["due_date"],
-                        "assignee": c["assignee"],
-                    }
-                    for c in conn.execute(
-                        "SELECT * FROM cards WHERE column_id = ? ORDER BY position",
-                        (col["id"],),
-                    ).fetchall()
-                ],
-            }
+            {"id": col["id"], "title": col["title"], "cards": cards_by_column[col["id"]]}
             for col in cols
         ]
     }
+
+
+def _column_in_board(conn: sqlite3.Connection, column_id: int, board_id: int) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM columns WHERE id = ? AND board_id = ?",
+        (column_id, board_id),
+    ).fetchone() is not None
+
+
+def _card_column_in_board(
+    conn: sqlite3.Connection, card_id: int, board_id: int
+) -> Optional[int]:
+    """Return the card's column_id if the card belongs to *board_id*, else None."""
+    row = conn.execute(
+        """
+        SELECT cards.column_id FROM cards
+        JOIN columns ON cards.column_id = columns.id
+        WHERE cards.id = ? AND columns.board_id = ?
+        """,
+        (card_id, board_id),
+    ).fetchone()
+    return row["column_id"] if row else None
 
 
 def _apply_board_update(
@@ -347,11 +377,7 @@ def _apply_board_update(
 ) -> None:
     """Apply AI-generated mutations, validating every ID against *board_id*."""
     for action in update.add_cards:
-        col = conn.execute(
-            "SELECT id FROM columns WHERE id = ? AND board_id = ?",
-            (action.column_id, board_id),
-        ).fetchone()
-        if not col:
+        if not _column_in_board(conn, action.column_id, board_id):
             continue
         position = conn.execute(
             "SELECT COUNT(*) FROM cards WHERE column_id = ?", (action.column_id,)
@@ -362,36 +388,17 @@ def _apply_board_update(
         )
 
     for action in update.move_cards:
-        card = conn.execute(
-            """
-            SELECT cards.id FROM cards
-            JOIN columns ON cards.column_id = columns.id
-            WHERE cards.id = ? AND columns.board_id = ?
-            """,
-            (action.card_id, board_id),
-        ).fetchone()
-        if not card:
+        if _card_column_in_board(conn, action.card_id, board_id) is None:
             continue
-        col = conn.execute(
-            "SELECT id FROM columns WHERE id = ? AND board_id = ?",
-            (action.column_id, board_id),
-        ).fetchone()
-        if not col:
+        if not _column_in_board(conn, action.column_id, board_id):
             continue
         _move_card_in_db(conn, action.card_id, action.column_id, action.position)
 
     for action in update.delete_cards:
-        row = conn.execute(
-            """
-            SELECT cards.column_id FROM cards
-            JOIN columns ON cards.column_id = columns.id
-            WHERE cards.id = ? AND columns.board_id = ?
-            """,
-            (action.card_id, board_id),
-        ).fetchone()
-        if row:
+        source_column = _card_column_in_board(conn, action.card_id, board_id)
+        if source_column is not None:
             conn.execute("DELETE FROM cards WHERE id = ?", (action.card_id,))
-            _renormalize_column(conn, row["column_id"])
+            _renormalize_column(conn, source_column)
 
     for action in update.rename_columns:
         conn.execute(
@@ -504,6 +511,15 @@ def get_board(
     return _build_board(conn, board)
 
 
+_BOARD_SUMMARY_SQL = """
+    SELECT b.id, b.title, b.position,
+           (SELECT COUNT(*) FROM cards c
+            JOIN columns col ON c.column_id = col.id
+            WHERE col.board_id = b.id) AS card_count
+    FROM boards b WHERE b.id = ?
+"""
+
+
 @app.patch("/api/boards/{board_id}", response_model=BoardSummary)
 def update_board(
     board_id: int,
@@ -516,17 +532,10 @@ def update_board(
         conn.execute("UPDATE boards SET title = ? WHERE id = ?", (body.title, board_id))
     if body.position is not None:
         conn.execute("UPDATE boards SET position = ? WHERE id = ?", (body.position, board_id))
-    row = conn.execute(
-        """
-        SELECT b.id, b.title, b.position,
-               (SELECT COUNT(*) FROM cards c
-                JOIN columns col ON c.column_id = col.id
-                WHERE col.board_id = b.id) AS card_count
-        FROM boards b WHERE b.id = ?
-        """,
-        (board_id,),
-    ).fetchone()
-    return BoardSummary(id=row["id"], title=row["title"], position=row["position"], card_count=row["card_count"])
+    row = conn.execute(_BOARD_SUMMARY_SQL, (board_id,)).fetchone()
+    return BoardSummary(
+        id=row["id"], title=row["title"], position=row["position"], card_count=row["card_count"]
+    )
 
 
 @app.delete("/api/boards/{board_id}", status_code=204)
@@ -611,30 +620,30 @@ def update_card(
     _require_board_for_user(conn, board_id, user_id)
     _require_card(conn, card_id, board_id)
 
-    updates: list[tuple[str, object]] = []
+    updates: dict[str, object] = {}
     if body.title is not None:
-        updates.append(("title", body.title))
+        updates["title"] = body.title
     if body.details is not None:
-        updates.append(("details", body.details))
-    if body.clear_priority:
-        updates.append(("priority", None))
-    elif body.priority is not None:
-        updates.append(("priority", body.priority))
-    if body.clear_due_date:
-        updates.append(("due_date", None))
-    elif body.due_date is not None:
-        updates.append(("due_date", body.due_date))
-    if body.clear_assignee:
-        updates.append(("assignee", None))
-    elif body.assignee is not None:
-        updates.append(("assignee", body.assignee))
+        updates["details"] = body.details
     if body.labels is not None:
-        updates.append(("labels", json.dumps(body.labels)))
+        updates["labels"] = json.dumps(body.labels)
+    # Nullable fields: a `clear_*` flag wins over a value, otherwise set if provided.
+    for field, clear in (
+        ("priority", body.clear_priority),
+        ("due_date", body.clear_due_date),
+        ("assignee", body.clear_assignee),
+    ):
+        if clear:
+            updates[field] = None
+        elif getattr(body, field) is not None:
+            updates[field] = getattr(body, field)
 
     if updates:
-        set_sql = ", ".join(f"{col} = ?" for col, _ in updates)
-        params = [val for _, val in updates] + [card_id]
-        conn.execute(f"UPDATE cards SET {set_sql} WHERE id = ?", params)
+        set_sql = ", ".join(f"{col} = ?" for col in updates)
+        conn.execute(
+            f"UPDATE cards SET {set_sql} WHERE id = ?",
+            (*updates.values(), card_id),
+        )
 
     row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
     return _card_to_out(row)

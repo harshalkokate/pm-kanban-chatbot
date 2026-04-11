@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -93,7 +93,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  const cardsById = useMemo(() => board?.cards ?? {}, [board?.cards]);
+  const cardsById = board?.cards ?? {};
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveCardId(event.active.id as string);
@@ -123,7 +123,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
       });
   };
 
-  const handleRenameColumn = (columnId: string, title: string) => {
+  const setColumnTitle = (columnId: string, title: string) => {
     setBoard((prev) =>
       prev
         ? {
@@ -141,16 +141,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     const original = board.columns.find((c) => c.id === columnId);
     if (!original || original.title === title) return;
     api.renameColumn(activeBoardId, columnId, title).catch(() => {
-      setBoard((prev) =>
-        prev
-          ? {
-              ...prev,
-              columns: prev.columns.map((c) =>
-                c.id === columnId ? { ...c, title: original.title } : c
-              ),
-            }
-          : prev
-      );
+      setColumnTitle(columnId, original.title);
       setApiError("Failed to rename column.");
     });
   };
@@ -178,10 +169,6 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     refreshBoards().catch(() => {});
   };
 
-  const handleOpenCard = (cardId: string) => {
-    setOpenCardId(cardId);
-  };
-
   const handleSaveCard = async (cardId: string, patch: CardPatch) => {
     if (activeBoardId == null) return;
     const updated = await api.updateCard(activeBoardId, cardId, patch);
@@ -193,20 +180,16 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
   const handleDeleteCard = async (cardId: string) => {
     if (activeBoardId == null || !board) return;
     const prevBoard = board;
-    setBoard((prev) =>
-      prev
-        ? {
-            ...prev,
-            cards: Object.fromEntries(
-              Object.entries(prev.cards).filter(([id]) => id !== cardId)
-            ),
-            columns: prev.columns.map((col) => ({
-              ...col,
-              cardIds: col.cardIds.filter((id) => id !== cardId),
-            })),
-          }
-        : prev
-    );
+    const nextCards = { ...board.cards };
+    delete nextCards[cardId];
+    setBoard({
+      ...board,
+      cards: nextCards,
+      columns: board.columns.map((col) => ({
+        ...col,
+        cardIds: col.cardIds.filter((id) => id !== cardId),
+      })),
+    });
     try {
       await api.deleteCard(activeBoardId, cardId);
       refreshBoards().catch(() => {});
@@ -241,10 +224,6 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
         err instanceof Error ? err.message : "Failed to delete board."
       );
     }
-  };
-
-  const handleLogout = async () => {
-    onLogout();
   };
 
   if (loadError)
@@ -317,7 +296,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
             )}
             <button
               type="button"
-              onClick={handleLogout}
+              onClick={onLogout}
               className="flex items-center gap-2 rounded-full border border-[var(--stroke)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-[var(--gray-text)] transition hover:border-[var(--navy-dark)] hover:text-[var(--navy-dark)]"
             >
               <svg
@@ -366,10 +345,10 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
                     cards={column.cardIds
                       .map((id) => board.cards[id])
                       .filter(Boolean)}
-                    onRename={handleRenameColumn}
+                    onRename={setColumnTitle}
                     onRenameCommit={handleRenameColumnCommit}
                     onAddCard={handleAddCard}
-                    onOpenCard={handleOpenCard}
+                    onOpenCard={setOpenCardId}
                   />
                 ))}
               </section>

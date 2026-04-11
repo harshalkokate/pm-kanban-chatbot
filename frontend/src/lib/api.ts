@@ -20,15 +20,20 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path: string, options: RequestInit = {}): Promise<Response> {
+async function request(
+  path: string,
+  options: { method?: string; body?: unknown } = {}
+): Promise<Response> {
+  const headers: Record<string, string> = {};
   const token = getToken();
-  const headers: Record<string, string> = {
-    ...(options.body ? { "Content-Type": "application/json" } : {}),
-    ...(options.headers as Record<string, string> | undefined),
-  };
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${BASE}${path}`, {
+    method: options.method,
+    headers,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  });
   if (res.status === 401) {
     clearSession();
     throw new ApiError(401, "Unauthorized");
@@ -44,10 +49,6 @@ async function request(path: string, options: RequestInit = {}): Promise<Respons
   return res;
 }
 
-const jsonBody = (body: unknown): RequestInit => ({
-  body: JSON.stringify(body),
-});
-
 // ---------------------------------------------------------------------------
 // Boards
 // ---------------------------------------------------------------------------
@@ -57,9 +58,7 @@ export async function listBoards(): Promise<BoardSummary[]> {
 }
 
 export async function createBoard(title: string): Promise<BoardSummary> {
-  return (
-    await request("/boards", { method: "POST", ...jsonBody({ title }) })
-  ).json();
+  return (await request("/boards", { method: "POST", body: { title } })).json();
 }
 
 export async function renameBoard(
@@ -67,7 +66,7 @@ export async function renameBoard(
   title: string
 ): Promise<BoardSummary> {
   return (
-    await request(`/boards/${boardId}`, { method: "PATCH", ...jsonBody({ title }) })
+    await request(`/boards/${boardId}`, { method: "PATCH", body: { title } })
   ).json();
 }
 
@@ -90,7 +89,7 @@ export async function renameColumn(
 ): Promise<void> {
   await request(`/boards/${boardId}/columns/${columnId}`, {
     method: "PATCH",
-    ...jsonBody({ title }),
+    body: { title },
   });
 }
 
@@ -102,7 +101,7 @@ export async function addCard(
   return (
     await request(`/boards/${boardId}/cards`, {
       method: "POST",
-      ...jsonBody({
+      body: {
         column_id: parseInt(columnId),
         title: input.title,
         details: input.details ?? "",
@@ -110,7 +109,7 @@ export async function addCard(
         due_date: input.dueDate ?? null,
         assignee: input.assignee ?? null,
         labels: input.labels ?? [],
-      }),
+      },
     })
   ).json();
 }
@@ -124,6 +123,16 @@ export type CardPatch = {
   labels?: string[];
 };
 
+function applyNullable(
+  body: Record<string, unknown>,
+  value: string | null | undefined,
+  setKey: string,
+  clearKey: string
+): void {
+  if (value === null) body[clearKey] = true;
+  else if (value !== undefined) body[setKey] = value;
+}
+
 export async function updateCard(
   boardId: number,
   cardId: string,
@@ -132,17 +141,14 @@ export async function updateCard(
   const body: Record<string, unknown> = {};
   if (patch.title !== undefined) body.title = patch.title;
   if (patch.details !== undefined) body.details = patch.details;
-  if (patch.priority === null) body.clear_priority = true;
-  else if (patch.priority !== undefined) body.priority = patch.priority;
-  if (patch.dueDate === null) body.clear_due_date = true;
-  else if (patch.dueDate !== undefined) body.due_date = patch.dueDate;
-  if (patch.assignee === null) body.clear_assignee = true;
-  else if (patch.assignee !== undefined) body.assignee = patch.assignee;
   if (patch.labels !== undefined) body.labels = patch.labels;
+  applyNullable(body, patch.priority, "priority", "clear_priority");
+  applyNullable(body, patch.dueDate, "due_date", "clear_due_date");
+  applyNullable(body, patch.assignee, "assignee", "clear_assignee");
   return (
     await request(`/boards/${boardId}/cards/${cardId}`, {
       method: "PATCH",
-      ...jsonBody(body),
+      body,
     })
   ).json();
 }
@@ -159,7 +165,7 @@ export async function moveCard(
 ): Promise<void> {
   await request(`/boards/${boardId}/cards/${cardId}/move`, {
     method: "POST",
-    ...jsonBody({ column_id: parseInt(columnId), position }),
+    body: { column_id: parseInt(columnId), position },
   });
 }
 
@@ -175,7 +181,7 @@ export async function aiChat(
   return (
     await request(`/boards/${boardId}/ai/chat`, {
       method: "POST",
-      ...jsonBody({ message, history }),
+      body: { message, history },
     })
   ).json();
 }
