@@ -4,7 +4,7 @@ A full-stack project management web app with an AI assistant. Built with Next.js
 
 ![Tech Stack](https://img.shields.io/badge/Next.js-16-black) ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688) ![Python](https://img.shields.io/badge/Python-3.12-3776AB) ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6) ![SQLite](https://img.shields.io/badge/SQLite-3-003B57)
 
-![Kanban Studio UI](docs/screenshot.png)
+![Kanban Studio UI](docs/image.png)
 
 ---
 
